@@ -8,7 +8,18 @@ from .user_model import User
 from .session import get_session
 from .auth_google import router as google_router
 
+from starlette.middleware.sessions import SessionMiddleware
+import os
+
+
 app = FastAPI()
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET", "dev-secret-change-me"),
+    same_site="lax",
+    https_only=True,
+)
+
 app.include_router(google_router)
 
 @app.on_event("startup")
