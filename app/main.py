@@ -156,27 +156,21 @@ def receipt_import(request: Request, raw_text: str = Form(...)):
         return RedirectResponse(url="/", status_code=303)
 
     user_id = sess["user_id"]
+    parsed = parse_receipt_text(raw_text)
 
-    try:
-        parsed = parse_receipt_text(raw_text)
+    with SessionLocal() as db:
+        r = Receipt(user_id=user_id, source="paste", raw_text=raw_text)
+        db.add(r)
+        db.commit()
+        db.refresh(r)
 
-        with SessionLocal() as db:
-            r = Receipt(user_id=user_id, source="paste", raw_text=raw_text)
-            db.add(r)
-            db.commit()
-            db.refresh(r)
+        receipt_id = r.id  # capture before session closes
 
-            for it in parsed:
-                db.add(ReceiptItem(receipt_id=r.id, name=it["name"], quantity=it["quantity"]))
-            db.commit()
+        for it in parsed:
+            db.add(ReceiptItem(receipt_id=receipt_id, name=it["name"], quantity=it["quantity"]))
+        db.commit()
 
-        return RedirectResponse(url=f"/receipt/{r.id}/review", status_code=303)
-
-    except Exception:
-        # This will show up in Render logs AND return the error text to your browser.
-        err = traceback.format_exc()
-        print(err)
-        return PlainTextResponse(err, status_code=500)
+    return RedirectResponse(url=f"/receipt/{receipt_id}/review", status_code=303)
 
 
 @app.get("/receipt/{receipt_id}/review", response_class=HTMLResponse)
@@ -201,15 +195,22 @@ def receipt_review(request: Request, receipt_id: int):
     <ul>{rows}</ul>
 
     <form action="/receipt/{receipt_id}/apply" method="post">
-      <button type="submit">Add all to inventory</button>
+    <label>Add items to: </label>
+    <select name="location">
+        <option value="pantry">pantry</option>
+        <option value="fridge">fridge</option>
+        <option value="freezer">freezer</option>
+    </select>
+    <button type="submit">Add all to inventory</button>
     </form>
 
     <p><a href="/dashboard">Back</a></p>
     """
 
 
+
 @app.post("/receipt/{receipt_id}/apply")
-def receipt_apply(request: Request, receipt_id: int):
+def receipt_apply(request: Request, receipt_id: int, location: str = Form("pantry")):
     sess = get_session(request)
     if not sess:
         return RedirectResponse(url="/", status_code=303)
@@ -227,7 +228,7 @@ def receipt_apply(request: Request, receipt_id: int):
                 user_id=user_id,
                 name=it.name,
                 quantity=it.quantity,
-                location="pantry"
+                location=location
             ))
         db.commit()
 
