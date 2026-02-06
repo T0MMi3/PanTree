@@ -1,6 +1,11 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
+from fastapi import Form
+from starlette.responses import RedirectResponse
+from .receipt_model import Receipt
+from .receipt_item_model import ReceiptItem
+from .receipt_parser import parse_receipt_text
 
 from .db import engine, SessionLocal
 from .models import Ping
@@ -29,6 +34,8 @@ def startup():
         Ping.metadata.create_all(bind=engine)
         User.metadata.create_all(bind=engine)
         InventoryItem.metadata.create_all(bind=engine)
+        Receipt.metadata.create_all(bind=engine)
+        ReceiptItem.metadata.create_all(bind=engine)
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
@@ -82,6 +89,12 @@ def dashboard(request: Request):
     return f"""
     <h1>Dashboard</h1>
     <p>Hello {sess.get('name')} ({sess.get('email')})</p>
+
+    <h3>Import from receipt text</h3>
+    <form action="/receipt/import" method="post">
+        <textarea name="raw_text" rows="10" cols="60" placeholder="Paste receipt text here..." required></textarea><br/>
+        <button type="submit">Parse Receipt</button>
+    </form>
 
     <h3>Add item</h3>
     <form action="/inventory/add" method="post">
@@ -137,3 +150,80 @@ def consume_item(request: Request, item_id: int):
             db.commit()
 
     return RedirectResponse(url="/dashboard", status_code=303)
+
+@app.post("/receipt/import")
+def receipt_import(request: Request, raw_text: str = Form(...)):
+    sess = get_session(request)
+    if not sess:
+        return RedirectResponse(url="/", status_code=303)
+    user_id = sess["user_id"]
+
+    parsed = parse_receipt_text(raw_text)
+
+    with SessionLocal() as db:
+        r = Receipt(user_id=user_id, source="paste", raw_text=raw_text)
+        db.add(r)
+        db.commit()
+        db.refresh(r)
+
+        for it in parsed:
+            db.add(ReceiptItem(receipt_id=r.id, name=it["name"], quantity=it["quantity"]))
+        db.commit()
+
+    return RedirectResponse(url=f"/receipt/{r.id}/review", status_code=303)
+
+
+@app.get("/receipt/{receipt_id}/review", response_class=HTMLResponse)
+def receipt_review(request: Request, receipt_id: int):
+    sess = get_session(request)
+    if not sess:
+        return RedirectResponse(url="/", status_code=303)
+    user_id = sess["user_id"]
+
+    with SessionLocal() as db:
+        receipt = db.query(Receipt).filter(Receipt.id == receipt_id, Receipt.user_id == user_id).first()
+        if not receipt:
+            return "<h2>Receipt not found</h2>"
+
+        items = db.query(ReceiptItem).filter(ReceiptItem.receipt_id == receipt_id).all()
+
+    rows = "".join(f"<li>{i.name} — qty {i.quantity}</li>" for i in items)
+
+    return f"""
+    <h1>Receipt Review</h1>
+    <p>Found {len(items)} items</p>
+    <ul>{rows}</ul>
+
+    <form action="/receipt/{receipt_id}/apply" method="post">
+      <button type="submit">Add all to inventory</button>
+    </form>
+
+    <p><a href="/dashboard">Back</a></p>
+    """
+
+
+@app.post("/receipt/{receipt_id}/apply")
+def receipt_apply(request: Request, receipt_id: int):
+    sess = get_session(request)
+    if not sess:
+        return RedirectResponse(url="/", status_code=303)
+    user_id = sess["user_id"]
+
+    with SessionLocal() as db:
+        receipt = db.query(Receipt).filter(Receipt.id == receipt_id, Receipt.user_id == user_id).first()
+        if not receipt:
+            return RedirectResponse(url="/dashboard", status_code=303)
+
+        items = db.query(ReceiptItem).filter(ReceiptItem.receipt_id == receipt_id).all()
+
+        for it in items:
+            db.add(InventoryItem(
+                user_id=user_id,
+                name=it.name,
+                quantity=it.quantity,
+                location="pantry"
+            ))
+        db.commit()
+
+    return RedirectResponse(url="/dashboard", status_code=303)
+
