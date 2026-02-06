@@ -17,6 +17,8 @@ from .inventory_model import InventoryItem
 from starlette.middleware.sessions import SessionMiddleware
 import os
 
+import traceback
+from starlette.responses import PlainTextResponse
 
 app = FastAPI()
 app.add_middleware(
@@ -55,10 +57,6 @@ def home(request: Request):
     <h1>PanTree 🌱</h1>
     <p><a href="/auth/google/start">Sign in with Google</a></p>
     """
-
-from fastapi import Form
-from starlette.responses import RedirectResponse
-from sqlalchemy import select
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
@@ -156,21 +154,29 @@ def receipt_import(request: Request, raw_text: str = Form(...)):
     sess = get_session(request)
     if not sess:
         return RedirectResponse(url="/", status_code=303)
+
     user_id = sess["user_id"]
 
-    parsed = parse_receipt_text(raw_text)
+    try:
+        parsed = parse_receipt_text(raw_text)
 
-    with SessionLocal() as db:
-        r = Receipt(user_id=user_id, source="paste", raw_text=raw_text)
-        db.add(r)
-        db.commit()
-        db.refresh(r)
+        with SessionLocal() as db:
+            r = Receipt(user_id=user_id, source="paste", raw_text=raw_text)
+            db.add(r)
+            db.commit()
+            db.refresh(r)
 
-        for it in parsed:
-            db.add(ReceiptItem(receipt_id=r.id, name=it["name"], quantity=it["quantity"]))
-        db.commit()
+            for it in parsed:
+                db.add(ReceiptItem(receipt_id=r.id, name=it["name"], quantity=it["quantity"]))
+            db.commit()
 
-    return RedirectResponse(url=f"/receipt/{r.id}/review", status_code=303)
+        return RedirectResponse(url=f"/receipt/{r.id}/review", status_code=303)
+
+    except Exception:
+        # This will show up in Render logs AND return the error text to your browser.
+        err = traceback.format_exc()
+        print(err)
+        return PlainTextResponse(err, status_code=500)
 
 
 @app.get("/receipt/{receipt_id}/review", response_class=HTMLResponse)
