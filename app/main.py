@@ -187,21 +187,27 @@ def receipt_review(request: Request, receipt_id: int):
 
         items = db.query(ReceiptItem).filter(ReceiptItem.receipt_id == receipt_id).all()
 
-    rows = "".join(f"<li>{i.name} — qty {i.quantity}</li>" for i in items)
+    rows = "".join(
+        f"""
+        <li>
+        {i.name} — qty {i.quantity}
+        <select name="loc_{i.id}">
+            <option value="pantry">pantry</option>
+            <option value="fridge">fridge</option>
+            <option value="freezer">freezer</option>
+        </select>
+        </li>
+        """
+        for i in items
+    )
 
     return f"""
     <h1>Receipt Review</h1>
     <p>Found {len(items)} items</p>
-    <ul>{rows}</ul>
 
     <form action="/receipt/{receipt_id}/apply" method="post">
-    <label>Add items to: </label>
-    <select name="location">
-        <option value="pantry">pantry</option>
-        <option value="fridge">fridge</option>
-        <option value="freezer">freezer</option>
-    </select>
-    <button type="submit">Add all to inventory</button>
+    <ul>{rows}</ul>
+    <button type="submit">Add to inventory</button>
     </form>
 
     <p><a href="/dashboard">Back</a></p>
@@ -210,11 +216,15 @@ def receipt_review(request: Request, receipt_id: int):
 
 
 @app.post("/receipt/{receipt_id}/apply")
-def receipt_apply(request: Request, receipt_id: int, location: str = Form("pantry")):
+async def receipt_apply(request: Request, receipt_id: int):
     sess = get_session(request)
     if not sess:
         return RedirectResponse(url="/", status_code=303)
+
     user_id = sess["user_id"]
+    form = await request.form()
+
+    allowed = {"pantry", "fridge", "freezer"}
 
     with SessionLocal() as db:
         receipt = db.query(Receipt).filter(Receipt.id == receipt_id, Receipt.user_id == user_id).first()
@@ -224,12 +234,18 @@ def receipt_apply(request: Request, receipt_id: int, location: str = Form("pantr
         items = db.query(ReceiptItem).filter(ReceiptItem.receipt_id == receipt_id).all()
 
         for it in items:
+            loc_key = f"loc_{it.id}"
+            location = form.get(loc_key, "pantry")
+            if location not in allowed:
+                location = "pantry"
+
             db.add(InventoryItem(
                 user_id=user_id,
                 name=it.name,
                 quantity=it.quantity,
                 location=location
             ))
+
         db.commit()
 
     return RedirectResponse(url="/dashboard", status_code=303)
